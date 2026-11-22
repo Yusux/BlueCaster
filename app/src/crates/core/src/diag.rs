@@ -1282,6 +1282,14 @@ fn codec_details(out: &mut String, c: &crate::CodecDetails) {
             );
         }
     }
+    if let Some(a) = &c.aptx_adaptive {
+        let _ = writeln!(
+            out,
+            "  aptX Adaptive: {}, {}",
+            if a.r2 { "R2" } else { "R1" },
+            if a.source_timed { "source-timed (piconet clock)" } else { "host-timed" }
+        );
+    }
     if let Some(d) = &c.device {
         let _ = writeln!(
             out,
@@ -2380,6 +2388,7 @@ mod tests {
                 }),
                 aac: None,
                 device: None,
+                aptx_adaptive: None,
             })),
         };
         let stats = LinkStats::default();

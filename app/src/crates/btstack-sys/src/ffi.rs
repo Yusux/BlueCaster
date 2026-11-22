@@ -99,6 +99,7 @@ unsafe extern "C" {
     pub fn bluecaster_cmd_read_afh_channel_map(con_handle: u16) -> u8;
     pub fn bluecaster_cmd_read_rssi(con_handle: u16) -> u8;
     pub fn bluecaster_cmd_read_failed_contact_counter(con_handle: u16) -> u8;
+    pub fn bluecaster_cmd_read_clock(con_handle: u16) -> u8;
     pub fn bluecaster_cmd_read_link_quality(con_handle: u16) -> u8;
     pub fn bluecaster_cmd_read_remote_version(con_handle: u16) -> u8;
     pub fn bluecaster_cmd_read_link_supervision_timeout(con_handle: u16) -> u8;

@@ -984,6 +984,8 @@ fn stream_session(
             Ok(ServiceEvent::OtherDeviceBack(a)) => outln!("Another device connected: {}", bt_host::addr_str(&a)),
             // The loader's own log lines say it
             Ok(ServiceEvent::Loader(_)) => {}
+            // The worker's own log lines say it
+            Ok(ServiceEvent::SharedRadio(_)) => {}
             // The set is kept with the saved device; merging is the UI core's
             Ok(ServiceEvent::LeSetLearned) => {}
             // Over TCP there is no USB adapter to tell

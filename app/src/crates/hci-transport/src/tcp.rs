@@ -100,7 +100,7 @@ impl Drop for TcpH4 {
 }
 
 /// Reads H4 frames (type byte, then the packet) until the socket closes
-fn read_loop(mut stream: TcpStream, upstream: Upstream) {
+pub(crate) fn read_loop(mut stream: impl Read, upstream: Upstream) {
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let mut chunk = [0u8; 4096];
     tracing::debug!("H4 over TCP: reader started");

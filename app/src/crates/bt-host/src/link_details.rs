@@ -38,6 +38,8 @@ pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_millis(1500);
 /// A reading of a link, or a setting given to it again
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinkRead {
+    /// Read Clock (the piconet clock): a source-timed aptX Adaptive stream
+    PiconetClock,
     FailedContacts,
     LinkQuality,
     RemoteVersion,
@@ -57,7 +59,8 @@ pub(crate) enum LinkRead {
 }
 
 impl LinkRead {
-    const ALL: [LinkRead; 7] = [
+    const ALL: [LinkRead; 8] = [
+        LinkRead::PiconetClock,
         LinkRead::FailedContacts,
         LinkRead::LinkQuality,
         LinkRead::RemoteVersion,
@@ -69,6 +72,7 @@ impl LinkRead {
 
     fn opcode(self) -> u16 {
         match self {
+            LinkRead::PiconetClock => HCI_OPCODE_READ_CLOCK,
             LinkRead::FailedContacts => HCI_OPCODE_READ_FAILED_CONTACT_COUNTER,
             LinkRead::LinkQuality => HCI_OPCODE_READ_LINK_QUALITY,
             LinkRead::RemoteVersion => HCI_OPCODE_READ_REMOTE_VERSION_INFORMATION,
@@ -81,6 +85,7 @@ impl LinkRead {
     /// Its bit in Read Local Supported Commands: (octet, bit)
     fn supported_bit(self) -> (usize, u8) {
         match self {
+            LinkRead::PiconetClock => (15, 7),
             LinkRead::FailedContacts => (15, 2),
             LinkRead::LinkQuality => (15, 4),
             LinkRead::RemoteVersion => (2, 7),
@@ -92,6 +97,7 @@ impl LinkRead {
 
     fn send(self, stack: &Stack, handle: u16) -> u8 {
         match self {
+            LinkRead::PiconetClock => stack.cmd_read_clock(handle),
             LinkRead::FailedContacts => stack.cmd_read_failed_contact_counter(handle),
             LinkRead::LinkQuality => stack.cmd_read_link_quality(handle),
             LinkRead::RemoteVersion => stack.cmd_read_remote_version(handle),
@@ -272,7 +278,7 @@ impl LinkTracker {
         self.queue(LinkRead::LinkQuality, handle);
     }
 
-    fn queue(&mut self, read: LinkRead, handle: u16) {
+    pub(crate) fn queue(&mut self, read: LinkRead, handle: u16) {
         if self.listed(read) && !self.refused.contains(&read.opcode()) && !self.reads.contains(&(read, handle)) {
             self.reads.push_back((read, handle));
         }
@@ -396,6 +402,14 @@ impl LinkTracker {
                         }
                         acl.d.failed_contacts = v;
                         acl.fcc_last = v.map(|v| (v, now));
+                    }
+                    HCI_OPCODE_READ_CLOCK => {
+                        // CLK[27:0] in 312.5 µs ticks, kept in µs: the
+                        // 32-bit time to play wraps with it
+                        acl.d.piconet_clock = p.get(8..12).filter(|_| ok).map(|b| {
+                            let ticks = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0x0FFF_FFFF;
+                            ((u64::from(ticks) * 625 / 2) as u32, Instant::now())
+                        });
                     }
                     HCI_OPCODE_READ_LINK_QUALITY => {
                         acl.d.link_quality = u8_at(p, 8).filter(|_| ok);
@@ -596,6 +610,16 @@ mod tests {
         t.reset();
         t.queue(LinkRead::FailedContacts, 0x0B);
         assert_eq!(t.reads.len(), 1);
+    }
+
+    #[test]
+    fn piconet_clock_reading_is_per_handle() {
+        let mut t = tracker_with(0x0b, [1; 6]);
+        let packet = command_complete(HCI_OPCODE_READ_CLOCK, &[0, 0x0b, 0, 3, 0, 0, 0, 0, 0]);
+        assert!(t.on_hci(HCI_EVENT_COMMAND_COMPLETE, &packet, false));
+        assert_eq!(t.links[&0x0b].d.piconet_clock.unwrap().0, 937);
+        t.disconnected(0x0b);
+        assert!(!t.on_hci(HCI_EVENT_COMMAND_COMPLETE, &packet, false));
     }
 
     #[test]

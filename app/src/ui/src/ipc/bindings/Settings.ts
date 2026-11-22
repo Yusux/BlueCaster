@@ -96,6 +96,16 @@ all_audio_devices: boolean,
  */
 developer_mode: boolean, 
 /**
+ * Adapter > Share with Windows (experimental): the WinUSB adapter
+ * ("VID:PID") classic audio shares with Windows
+ */
+shared_radio_adapter: string, 
+/**
+ * The LE peripheral ("XX:XX:XX:XX:XX:XX") Windows may connect to on the
+ * shared adapter; empty: no sharing
+ */
+shared_radio_peer: string, 
+/**
  * Developer mode: overrides of the codec and media path, in force
  * while developer_mode is on (read when the next stream is set up)
  */

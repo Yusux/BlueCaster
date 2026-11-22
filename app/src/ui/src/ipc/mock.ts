@@ -211,6 +211,8 @@ export function sampleSettings(over: Partial<Settings> = {}): Settings {
     volume_mixer: false,
     all_audio_devices: false,
     developer_mode: false,
+    shared_radio_adapter: "",
+    shared_radio_peer: "",
     dev_overrides: {
       rtp_marker: false,
       packet_dump: false,

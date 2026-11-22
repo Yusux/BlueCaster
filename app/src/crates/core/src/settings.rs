@@ -194,6 +194,12 @@ pub struct Settings {
     pub all_audio_devices: bool,
 
     pub debug_mode: bool,
+    /// Adapter > Share with Windows (experimental): the WinUSB adapter
+    /// ("VID:PID") classic audio shares with Windows
+    pub shared_radio_adapter: String,
+    /// The LE peripheral ("XX:XX:XX:XX:XX:XX") Windows may connect to on the
+    /// shared adapter; empty: no sharing
+    pub shared_radio_peer: String,
     /// Developer mode: overrides of the codec and media path (in force only
     /// while debug_mode is on)
     pub dev_overrides: codec::dev::DevOverrides,
@@ -401,6 +407,8 @@ impl Default for Settings {
             volume_mixer: false,
             all_audio_devices: false,
             debug_mode: false,
+            shared_radio_adapter: String::new(),
+            shared_radio_peer: String::new(),
             dev_overrides: codec::dev::DevOverrides::default(),
             dev_vendors: Default::default(),
             dev_log: DevLog::default(),

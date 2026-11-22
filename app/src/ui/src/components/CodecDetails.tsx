@@ -2,10 +2,12 @@
 // next to what the device offered (the SBC bitpool range, channel modes,
 // AAC object types ...; for the other codecs the rates, bit depths and peak
 // bit rate their endpoint lists, issue #86), and how the codec frames fill
-// a packet.
+// a packet. aptX Adaptive also shows its version and how its packets are
+// timed (source-timed for the Bose QC Ultra).
 
 import { For, type JSX, Show } from "solid-js";
 import { t } from "../i18n";
+import type { AptxAdaptiveDetails } from "../ipc/bindings/AptxAdaptiveDetails";
 import type { CodecDeviceCaps } from "../ipc/bindings/CodecDeviceCaps";
 import type { CodecDetails, StreamInfo } from "../ipc/types";
 import {
@@ -190,6 +192,19 @@ function DeviceRows(props: { device: CodecDeviceCaps; info: StreamInfo }) {
   );
 }
 
+/** aptX Adaptive: R1 or R2, and who times the packets */
+function AptxAdaptiveRows(props: { aptx: AptxAdaptiveDetails }) {
+  return (
+    <>
+      <Row label={t("ui.diag.cd_aptxad_version")} value={props.aptx.r2 ? "R2" : "R1"} />
+      <Row
+        label={t("ui.diag.cd_aptxad_timing")}
+        value={props.aptx.source_timed ? t("ui.diag.cd_aptxad_source") : t("ui.diag.cd_aptxad_host")}
+      />
+    </>
+  );
+}
+
 export function CodecDetailsCard(props: { info: StreamInfo; details: CodecDetails }) {
   const d = () => props.details;
   const headers = () => {
@@ -253,15 +268,15 @@ export function CodecDetailsCard(props: { info: StreamInfo; details: CodecDetail
           </>
         )}
       </Show>
-      <Show when={d().device}>
-        {(dev) => (
-          <>
-            <h3 class="cd-sub">{props.info.codec}</h3>
-            <dl class="lq-rows">
-              <DeviceRows device={dev()} info={props.info} />
-            </dl>
-          </>
-        )}
+      <Show when={d().device || d().aptx_adaptive}>
+        <h3 class="cd-sub">{props.info.codec}</h3>
+        <dl class="lq-rows">
+          <Show when={d().aptx_adaptive}>{(a) => <AptxAdaptiveRows aptx={a()} />}</Show>
+          <Show when={d().device}>{(dev) => <DeviceRows device={dev()} info={props.info} />}</Show>
+        </dl>
+        <Show when={d().aptx_adaptive}>
+          <p class="hint">{t("ui.diag.cd_aptxad_help")}</p>
+        </Show>
       </Show>
       <Show when={chipsShown()}>
         <p class="hint">{t("ui.diag.cd_legend")}</p>

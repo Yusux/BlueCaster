@@ -64,10 +64,16 @@ const PLAYBACK_IDLE_TICKS: u32 = 2;
 const PLAYBACK_HOLD: Duration = Duration::from_millis(3000);
 /// One volume command at a time; a lost response must not block for good
 const VOLUME_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1000);
+/// The shared radio's LE scan, in 0.625 ms units: 160 ms interval, 10 ms window
+const SHARED_RADIO_SCAN_INTERVAL: u16 = 0x0100;
+const SHARED_RADIO_SCAN_WINDOW: u16 = 0x0010;
 
 /// What the BTstack thread needs to set up HCI
 pub(crate) struct Setup {
-    pub tcp: bool,
+    /// No adapter of our own to set up (H4 over TCP, or the shared radio)
+    pub virtual_controller: bool,
+    /// The shared radio: one LE peripheral of Windows' on this adapter
+    pub shared_radio: bool,
     pub link_key_file: Option<PathBuf>,
     pub firmware_dir: PathBuf,
     pub realtek_pid: u16,
@@ -108,8 +114,8 @@ fn is_realtek_rom_lmp(lmp_subver: u16) -> bool {
 /// without error in this run: a chip none of them covers, or a loader that
 /// failed. None after a loader's success (its firmware loaded or running
 /// already) and for the emulator's virtual controller.
-fn missing_loader_warning(company: u16, loader_ok: bool, tcp: bool) -> Option<String> {
-    if loader_ok || tcp || !matches!(company, 0x0046 | 0x001D | 0x0045) {
+fn missing_loader_warning(company: u16, loader_ok: bool, virtual_controller: bool) -> Option<String> {
+    if loader_ok || virtual_controller || !matches!(company, 0x0046 | 0x001D | 0x0045) {
         return None;
     }
     let name = crate::chips::company_name(company).unwrap_or("unknown");
@@ -128,6 +134,10 @@ pub(crate) struct HostApp {
     /// The encode thread queues packets only while this is set
     pub media_streaming: crate::media::StreamingFlag,
     pub setup: Setup,
+    /// The transport HCI runs on once the firmware loader is done, in place
+    /// of the loader's own (the shared radio, after an Intel adapter's
+    /// firmware loaded over WinUSB)
+    pub after_loader: Option<Box<dyn HciBackend>>,
     pub afh: Option<Box<dyn crate::AfhSource>>,
     /// LE Audio (experimental): None while off
     pub le: Option<LeCore>,
@@ -261,6 +271,7 @@ impl HostApp {
             media,
             media_streaming,
             setup,
+            after_loader: None,
             afh,
             le,
             rfcomm: Rfcomm::default(),
@@ -546,7 +557,12 @@ impl HostApp {
                 tracing::info!("{vendor} controller: {said}");
                 self.loader_ok = true;
                 self.show_loader_done(vendor, said, true);
-                self.setup_hci_and_power_on(stack, None);
+                let next = self.after_loader.take();
+                if next.is_some() {
+                    // Free the adapter for the transport that takes it over
+                    stack.close_installed_transport();
+                }
+                self.setup_hci_and_power_on(stack, next);
             }
             // Raw mode stays to the end of the run: hci_init has not run, so
             // BTstack must get no packet (late answers go to the app, which
@@ -588,7 +604,7 @@ impl HostApp {
             Some(b) => stack.hci_init(b),
             None => stack.hci_init_installed(),
         }
-        if self.setup.tcp && self.setup.realtek_pid != 0 {
+        if self.setup.virtual_controller && self.setup.realtek_pid != 0 {
             // The virtual controller is no Realtek chip, even when a Realtek
             // adapter is plugged in (it would never answer vendor commands)
             tracing::info!("H4 over TCP: ignoring Realtek PID 0x{:04X}", self.setup.realtek_pid);
@@ -618,11 +634,11 @@ impl HostApp {
         }
 
         tracing::debug!(
-            "hci setup: link key file {:?}, battery (HFP) {}, LE Audio {}, tcp {}",
+            "hci setup: link key file {:?}, battery (HFP) {}, LE Audio {}, virtual controller {}",
             self.setup.link_key_file,
             self.setup.battery,
             self.le.is_some(),
-            self.setup.tcp
+            self.setup.virtual_controller
         );
         match &self.setup.link_key_file {
             Some(file) => stack.set_link_key_store(Some(Box::new(FileLinkKeyStore::open(file)))),
@@ -1761,6 +1777,16 @@ impl HostApp {
                 self.shared.update(|s| s.realtek_rom = true);
             }
         }
+        // The shared radio: Windows' scans see what this one reports (the
+        // worker forwards the selected peripheral's advertisements). Active,
+        // a 10 ms window every 160 ms, leaving the radio to classic audio.
+        if self.setup.shared_radio
+            && stack.le_set_scan_params(true, SHARED_RADIO_SCAN_INTERVAL, SHARED_RADIO_SCAN_WINDOW, 0)
+                == ERROR_CODE_SUCCESS
+        {
+            stack.le_start_scan();
+            tracing::info!("shared radio: observing LE advertisements during classic audio");
+        }
         self.completed_by_handle.clear();
         // Developer > Debug: MediaTek controllers only
         self.debug_command_sent = None;
@@ -1839,13 +1865,13 @@ impl HostApp {
                 }
             }
         }
-        if let Some(why) = missing_loader_warning(manufacturer, self.loader_ok, self.setup.tcp) {
+        if let Some(why) = missing_loader_warning(manufacturer, self.loader_ok, self.setup.virtual_controller) {
             tracing::warn!("{why}");
         }
         // Broadcom (Cypress / Infineon map to it inside BTstack): the
         // PatchRAM goes in during custom init, which follows this command;
         // after the upload BTstack resets without re-reading the version
-        if self.bcm_checked || self.setup.realtek_pid != 0 || self.setup.tcp {
+        if self.bcm_checked || self.setup.realtek_pid != 0 || self.setup.virtual_controller {
             return;
         }
         if manufacturer != COMPANY_ID_BROADCOM || stack.hci_state() != HciState::Initializing {
@@ -1973,6 +1999,16 @@ impl HostApp {
                 tracing::debug!("SEID {seid} codec capability (header {:02X?}): {info:02X?}", p.get(3..11));
                 match self.caps.add_vendor(seid, info) {
                     VendorCapability::Taken(kind) => {
+                        // A source-timed stream starts from a piconet clock
+                        // reading: ask for it before the stream is set up
+                        if kind == codec::CodecKind::AptxAdaptive && self.caps.aptxad_source_timed() {
+                            // Not held while the command goes out
+                            let handle = self.shared.lock().a2dp_con_handle;
+                            if let Some(handle) = handle {
+                                self.link.queue(crate::link_details::LinkRead::PiconetClock, handle);
+                                self.send_link_reads(stack);
+                            }
+                        }
                         tracing::info!("remote supports {kind} (SEID {seid}, {info:02X?})")
                     }
                     VendorCapability::Ignored(kind, why) => {

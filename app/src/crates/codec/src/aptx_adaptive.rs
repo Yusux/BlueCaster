@@ -20,6 +20,9 @@
 //! a latency adjustment in ms, 0) and the SSRC = the sink's latency mode
 //! (0xA3 HQ, 0xA1 LL). So the encoder writes the whole RTP packet and the
 //! packetizer sends it as is (as FastStream, without BTstack's header).
+//! A source-timed sink (`RemoteCaps::aptxad_source_timed`, the Bose QC
+//! Ultra) instead takes a time to play: the timestamp is the piconet clock in
+//! µs at which the packet plays, and the SSRC is 0xAE in either mode.
 //!
 //! Levels (bit rate, packet period) with an R1 sink in HQ: 2 = 318 kbps /
 //! 16 ms, 3 = 364 / 14 (the reference's start), 4 = 427 / 12, all 656-byte
@@ -53,6 +56,12 @@ const RTP_PAYLOAD_TYPE: u8 = 0x60;
 /// latency, the one a source without sideband feedback stays in
 pub const SSRC_HQ: u32 = 0x0000_00A3;
 pub const SSRC_LL: u32 = 0x0000_00A1;
+/// SSRC of a source-timed stream, either latency mode
+pub const SSRC_SOURCE_TIMED: u32 = 0x0000_00AE;
+/// A source-timed stream's first time to play, after the clock reading
+/// (as the target latencies of APTXAD_TTP_DEFAULTS: LL 60 ms, HQ 200 ms)
+const TTP_LEAD_LL_US: u32 = 60_000;
+const TTP_LEAD_HQ_US: u32 = 200_000;
 
 /// The rate BlueCaster streams by default, to every sink
 pub const SAMPLE_RATE: u32 = 48000;
@@ -92,6 +101,10 @@ pub struct AptxAdaptiveEncoder {
     pcm: Vec<i32>,
     seq: u16,
     ssrc: u32,
+    /// Source-timed: the time to play of the next packet (piconet µs)
+    next_play_time: Option<u32>,
+    /// Source-timed: the first packet's time to play, as of the clock reading
+    clock_seed: Option<(u32, std::time::Instant)>,
     /// The level the quality asks for: fixed, or ABR's start and ceiling
     level: u8,
     abr: Option<Abr>,
@@ -162,8 +175,26 @@ impl AptxAdaptiveEncoder {
         }
         let abr = (config.abr && profile == Profile::Hq).then(Abr::default);
         let frames_per_encode = (sample_rate * ENCODE_MS / 1000) as usize;
+        let source_timed = config.peer.aptxad_source_timed;
+        if source_timed && config.peer.aptxad_link_clock.is_none() {
+            return unsupported("a source-timed sink needs a piconet clock reading".into());
+        }
+        if source_timed {
+            tracing::info!("aptX Adaptive: source-timed (time to play on the piconet clock)");
+        }
         let encoder = AptxAdaptiveEncoder {
-            ssrc: if profile == Profile::Ll { SSRC_LL } else { SSRC_HQ },
+            next_play_time: None,
+            clock_seed: config.peer.aptxad_link_clock.filter(|_| source_timed).map(|(clock, at)| {
+                let lead_us = if profile == Profile::Ll { TTP_LEAD_LL_US } else { TTP_LEAD_HQ_US };
+                (clock.wrapping_add(lead_us), at)
+            }),
+            ssrc: if source_timed {
+                SSRC_SOURCE_TIMED
+            } else if profile == Profile::Ll {
+                SSRC_LL
+            } else {
+                SSRC_HQ
+            },
             stream,
             channels: config.channels as usize,
             frames_per_encode,
@@ -251,6 +282,7 @@ impl Encoder for AptxAdaptiveEncoder {
         // The period of the packet this call may emit: a level change takes
         // effect after it
         let frames = self.packet_frames();
+        let period_us = self.stream.row().period_ms * 1000;
         let written = self
             .stream
             .push(&self.pcm, &mut out[RTP_HEADER_LEN..])
@@ -262,9 +294,17 @@ impl Encoder for AptxAdaptiveEncoder {
         h[0] = RTP_V2;
         h[1] = RTP_PAYLOAD_TYPE;
         h[2..4].copy_from_slice(&self.seq.to_be_bytes());
-        // Latency adjustment 0 (the sink corrects drift itself), samples per
-        // channel never 0
-        h[4..8].copy_from_slice(&frames.min(u32::from(u16::MAX)).to_be_bytes());
+        // Host-timed: latency adjustment 0 (the sink corrects drift itself),
+        // samples per channel never 0. Source-timed: the first packet plays
+        // the lead after the clock reading, each next one a period after it
+        let timestamp = if let Some((base, read_at)) = self.clock_seed {
+            let play = self.next_play_time.unwrap_or_else(|| base.wrapping_add(read_at.elapsed().as_micros() as u32));
+            self.next_play_time = Some(play.wrapping_add(period_us));
+            play
+        } else {
+            frames.min(u32::from(u16::MAX))
+        };
+        h[4..8].copy_from_slice(&timestamp.to_be_bytes());
         h[8..12].copy_from_slice(&self.ssrc.to_be_bytes());
         self.seq = self.seq.wrapping_add(1);
         Ok(Encoded { bytes: RTP_HEADER_LEN + written, frames: 1 })
@@ -409,6 +449,23 @@ mod tests {
         assert!(packets.iter().all(|p| p.len() == 12 + 656 && ts(p) == 576));
         let mobile = AptxAdaptiveEncoder::new(&config(Quality::Mobile, false, false, 2)).unwrap();
         assert_eq!(mobile.bitrate_kbps(), 318);
+    }
+
+    #[test]
+    fn source_timed_packets_play_a_period_apart() {
+        for (quality, step) in [(Quality::High, 12_000), (Quality::LowLatency, 10_000)] {
+            let mut cfg = config(quality, true, true, 2);
+            cfg.peer.aptxad_source_timed = true;
+            assert!(AptxAdaptiveEncoder::new(&cfg).is_err());
+            cfg.peer.aptxad_link_clock = Some((0, std::time::Instant::now()));
+            let mut encoder = AptxAdaptiveEncoder::new(&cfg).unwrap();
+            let packets = run(&mut encoder, &tone(4800, 2));
+            assert!(packets.len() >= 2);
+            assert!(packets.iter().all(|p| p[8..12] == SSRC_SOURCE_TIMED.to_be_bytes()));
+            for pair in packets.windows(2) {
+                assert_eq!(ts(&pair[1]).wrapping_sub(ts(&pair[0])), step);
+            }
+        }
     }
 
     #[test]

@@ -408,6 +408,8 @@ pub enum ServiceEvent {
     OtherDeviceBack([u8; 6]),
     /// A firmware loader's step, percent or end while the adapter starts
     Loader(bt_host::bringup::LoaderProgress),
+    /// The shared radio's state changed (Adapter > Share with Windows)
+    SharedRadio(hci_transport::shared::SharedRadioStatus),
     /// Headset mode: the voice link carries audio (Some), or no longer
     /// (None)
     Voice(Option<ipc::VoiceStatus>),
@@ -690,10 +692,17 @@ impl Inner {
         self.le_active.load(Ordering::Acquire)
     }
 
-    fn host_config(&self, le_on: bool) -> HostConfig {
+    /// The host to start. `shared_radio`: the shared radio's transport when
+    /// sharing is set up (classic audio only, not LE Audio); false for a
+    /// probe of the adapter itself
+    fn host_config(&self, le_on: bool, shared_radio: bool) -> HostConfig {
         let s = self.settings.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let transport = match &self.opts.hci_tcp {
             Some(addr) => TransportConfig::Tcp(addr.clone()),
+            None if shared_radio && !le_on && !s.shared_radio_peer.is_empty() => TransportConfig::SharedRadio {
+                adapter: s.shared_radio_adapter.clone(),
+                peer: s.shared_radio_peer.clone(),
+            },
             // bt-host adds the adapters it knows to `known`
             None => TransportConfig::Usb(self.opts.usb.clone()),
         };
@@ -725,6 +734,13 @@ impl Inner {
         c.on_loader = Some(Arc::new(move |p| {
             let _ = events.lock().unwrap_or_else(|e| e.into_inner()).send(ServiceEvent::Loader(p.clone()));
         }));
+        // The Adapters screen shows the shared radio's state
+        if matches!(c.transport, TransportConfig::SharedRadio { .. }) {
+            let events = Mutex::new(self.events.lock().unwrap_or_else(|e| e.into_inner()).clone());
+            c.on_shared_radio = Some(Arc::new(move |s| {
+                let _ = events.lock().unwrap_or_else(|e| e.into_inner()).send(ServiceEvent::SharedRadio(s.clone()));
+            }));
+        }
         tracing::debug!(
             "host config: transport {:?}, firmware dir {:?}, realtek pid {:04x} files {:?}, intel loader {}, mediatek loader {}, qualcomm loader {}, atheros loader {}, realtek driver chip {:04X?}, broadcom ids {}, LE {} (cli {:?})",
             c.transport,
@@ -757,7 +773,7 @@ impl Inner {
                 tracing::warn!("the Bluetooth adapter did not answer, opening it again ({attempt}/{attempts})");
             }
             let t = Instant::now();
-            let started = BtHost::start(self.host_config(le_on), self.stats.clone());
+            let started = BtHost::start(self.host_config(le_on, true), self.stats.clone());
             tracing::debug!(
                 "host start: attempt {attempt}/{attempts} {} after {} ms",
                 if started.is_ok() { "ok" } else { "failed" },
@@ -1076,7 +1092,7 @@ impl Inner {
             h.shutdown();
             self.adapter_changed(false);
         }
-        let mut c = self.host_config(false);
+        let mut c = self.host_config(false, false);
         if let (TransportConfig::Usb(sel), Some(id)) = (&mut c.transport, instance_id) {
             sel.instance_id = Some(id);
             sel.vid_pid = None;
@@ -1450,7 +1466,18 @@ impl Service {
             h.set_afh_policy(self.inner.opts.afh.as_deref().unwrap_or(afh_policy(&settings)));
         }
         let old = std::mem::replace(&mut *self.inner.settings.lock().unwrap_or_else(|e| e.into_inner()), settings);
-        let new_le = self.inner.settings.lock().unwrap_or_else(|e| e.into_inner()).le_audio();
+        let (new_le, sharing_changed) = {
+            let s = self.inner.settings.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                s.le_audio(),
+                (&old.shared_radio_adapter, &old.shared_radio_peer) != (&s.shared_radio_adapter, &s.shared_radio_peer),
+            )
+        };
+        // The shared radio is a transport of its own: the stack starts anew
+        // for the next connection
+        if sharing_changed {
+            self.inner.reload.store(true, Ordering::Release);
+        }
         if old.le_audio() != new_le && host.is_some() && self.inner.le_active() != self.inner.le_wanted() {
             if self.is_running() || self.is_scanning() {
                 tracing::info!(

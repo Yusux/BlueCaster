@@ -20,7 +20,7 @@ import { Banner, Button, Field, Section, Segmented, Select, Toggle } from "../co
 import { Icon } from "../components/Icon";
 import { ErrorPanel, FirmwareDownload, openFirmwareFolder, WinusbDialog } from "../components/stream";
 import { t, tm } from "../i18n";
-import type { AdapterInfo, DriverKind, FirmwareFile, ProbeResult } from "../ipc/types";
+import type { AdapterInfo, DriverKind, FirmwareFile, ProbeResult, SharedRadioStatus } from "../ipc/types";
 import {
   adapterFirmwareTag,
   buildChipOptions,
@@ -397,6 +397,7 @@ export function Adapter() {
       <Show when={chipCard() < 0}>
         <ChipSection files={files()} onChanged={loadFiles} />
       </Show>
+      <SharedRadioSettings />
       <LeAudioToggle />
       <AfhSection />
 
@@ -638,6 +639,92 @@ export function leAudioToggleShown(
   developer: boolean,
 ): boolean {
   return developer && (adapter.le_audio === true || adapter.adapters.some((a) => a.le_audio === true));
+}
+
+/** A BLE address as Windows shows it: six hex pairs */
+const BLE_ADDRESS = /^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/i;
+
+/** What the shared radio's banner says: none while sharing is off */
+export function sharedRadioBanner(
+  peer: string,
+  status: SharedRadioStatus | null | undefined,
+): { kind: "info" | "warn" | "error" | "good"; title: string; text?: string } | null {
+  if (!peer) return null;
+  switch (status?.state) {
+    case "starting":
+      return { kind: "info", title: t("ui.adapter.shared_state_starting") };
+    case "waiting":
+      return { kind: "warn", title: t("ui.adapter.shared_state_waiting"), text: t("ui.adapter.shared_waiting") };
+    case "attached":
+      return { kind: "good", title: t("ui.adapter.shared_state_attached"), text: t("ui.adapter.shared_attached", peer) };
+    case "connected":
+      return { kind: "good", title: t("ui.adapter.shared_state_connected"), text: t("ui.adapter.shared_connected", peer) };
+    default:
+      return status?.error
+        ? { kind: "error", title: t("ui.adapter.shared_state_failed"), text: status.error }
+        : { kind: "info", title: t("ui.adapter.shared_state_idle"), text: t("ui.adapter.shared_idle") };
+  }
+}
+
+/** Adapter > Share with Windows (experimental): the adapter and the BLE
+ *  peripheral Windows may use on it, and where the shared radio is */
+/** The shared radio (experimental) is set up in developer mode, on a WinUSB
+ *  adapter; once a peer is saved it stays shown, so sharing that runs can be
+ *  turned off */
+export function sharedRadioShown(developer: boolean, winusb: boolean, peer: string): boolean {
+  return !!peer || (developer && winusb);
+}
+
+function SharedRadioSettings() {
+  const app = useApp();
+  const snap = () => app.core.state.snap!;
+  const saved = () => snap().settings;
+  const [peer, setPeer] = createSignal(saved().shared_radio_peer);
+  const [adapter, setAdapter] = createSignal(saved().shared_radio_adapter);
+  const options = createMemo(() =>
+    snap()
+      .adapter.adapters.filter((a) => a.driver === "winusb")
+      .map((a) => ({ value: `${hex4(a.vid)}:${hex4(a.pid)}`, label: adapterName(a) })),
+  );
+  const selected = () => adapter() || options()[0]?.value || "";
+  const typed = () => peer().trim().toUpperCase();
+  // The worker opens the adapter by its USB IDs: they must name one adapter
+  const valid = () => !typed() || (BLE_ADDRESS.test(typed()) && options().filter((o) => o.value === selected()).length === 1);
+  const next = () => ({ shared_radio_peer: typed(), shared_radio_adapter: typed() ? selected() : "" });
+  const changed = () =>
+    next().shared_radio_peer !== saved().shared_radio_peer || next().shared_radio_adapter !== saved().shared_radio_adapter;
+  const banner = () => sharedRadioBanner(saved().shared_radio_peer, snap().adapter.shared_radio);
+  return (
+    <Show when={sharedRadioShown(saved().developer_mode, options().length > 0, saved().shared_radio_peer)}>
+      <Section title={t("ui.adapter.shared_radio")}>
+        <Show when={banner()}>
+          {(b) => (
+            <Banner kind={b().kind} title={b().title}>
+              {b().text}
+            </Banner>
+          )}
+        </Show>
+        <Field label={t("ui.adapter.shared_adapter")}>
+          {(id) => <Select id={id} value={selected()} options={options()} onChange={setAdapter} />}
+        </Field>
+        <Field label={t("ui.adapter.shared_peer")} hint={t("ui.adapter.shared_hint")}>
+          {(id, hint) => (
+            <input
+              id={id}
+              aria-describedby={hint}
+              value={peer()}
+              spellcheck={false}
+              placeholder="00:11:22:33:44:55"
+              onInput={(e) => setPeer(e.currentTarget.value)}
+            />
+          )}
+        </Field>
+        <Button disabled={!valid() || !changed()} onClick={() => void saveSettings(app, next())}>
+          {t("ui.adapter.shared_save")}
+        </Button>
+      </Section>
+    </Show>
+  );
 }
 
 function LeAudioToggle() {

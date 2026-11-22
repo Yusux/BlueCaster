@@ -173,6 +173,9 @@ fn core_codec_details(d: ipc::CodecDetails) -> bluecaster_core::CodecDetails {
             max_bitrate: c.max_bitrate,
             lhdcv5_low_latency: c.lhdcv5_low_latency,
         }),
+        aptx_adaptive: d
+            .aptx_adaptive
+            .map(|a| bluecaster_core::AptxAdaptiveDetails { r2: a.r2, source_timed: a.source_timed }),
     }
 }
 

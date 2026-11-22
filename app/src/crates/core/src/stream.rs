@@ -268,6 +268,18 @@ pub struct CodecDetails {
     /// Any other codec: what the device's endpoint of it lists, as SBC and
     /// AAC say theirs (issue #86)
     pub device: Option<CodecDeviceCaps>,
+    /// aptX Adaptive: its version and how its packets are timed
+    pub aptx_adaptive: Option<AptxAdaptiveDetails>,
+}
+
+/// aptX Adaptive beyond the summary
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct AptxAdaptiveDetails {
+    /// The sink is R2 (capability extension), else R1
+    pub r2: bool,
+    /// Source-timed: each packet carries its time to play on the piconet
+    /// clock (the Bose QC Ultra); else host-timed, the sink paces itself
+    pub source_timed: bool,
 }
 
 /// SBC, SBC XQ and FastStream frames
@@ -402,6 +414,8 @@ pub fn codec_details(
     let device = (!matches!(kind, CodecKind::Sbc | CodecKind::SbcXq | CodecKind::Aac | CodecKind::FastStream))
         .then(|| codec_device_caps(remote).into_iter().find(|c| c.codec == kind.key()))
         .flatten();
+    let aptx_adaptive = (kind == CodecKind::AptxAdaptive)
+        .then(|| AptxAdaptiveDetails { r2: remote.aptxad_r2(), source_timed: remote.aptxad_source_timed() });
     CodecDetails {
         mtu: raw + kind.media_header_len() as u32,
         rtp: kind.uses_rtp(),
@@ -412,6 +426,7 @@ pub fn codec_details(
         sbc,
         aac,
         device,
+        aptx_adaptive,
     }
 }
 
@@ -1169,7 +1184,24 @@ fn connect_error(f: Option<ConnectFailure>) -> Msg {
     })
 }
 
-fn peer_params(remote: &RemoteCaps, kind: CodecKind, channels: u32, req: &StreamRequest) -> PeerParams {
+/// How long a source-timed stream waits for its piconet clock reading
+const PICONET_CLOCK_WAIT: Duration = Duration::from_millis(1500);
+
+/// The A2DP link's piconet clock reading. Read Clock goes out when the
+/// sink's capabilities arrive (bt-host); on a busy controller its answer can
+/// come after AVDTP OPEN, so this waits up to [`PICONET_CLOCK_WAIT`].
+fn piconet_clock(host: &BtHost) -> Option<(u32, Instant)> {
+    let deadline = Instant::now() + PICONET_CLOCK_WAIT;
+    loop {
+        let reading = host.stats().link().piconet_clock;
+        if reading.is_some() || Instant::now() >= deadline {
+            return reading;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn peer_params(host: &BtHost, remote: &RemoteCaps, kind: CodecKind, channels: u32, req: &StreamRequest) -> PeerParams {
     let (opus_frame_ms, opus_channels, opus_max_bitrate) = remote.opus_params(kind, channels);
     // The SET_CONFIGURATION took the same (configuration_with)
     let sbc = match kind {
@@ -1219,6 +1251,8 @@ fn peer_params(remote: &RemoteCaps, kind: CodecKind, channels: u32, req: &Stream
         aac_max_bitrate = 0;
         opus_max_bitrate = 0;
     }
+    let aptxad_source_timed = kind == CodecKind::AptxAdaptive && remote.aptxad_source_timed();
+    let aptxad_link_clock = if aptxad_source_timed { piconet_clock(host) } else { None };
     PeerParams {
         lhdcv5_bitrate_limits,
         sbc_min_bitpool: remote.sbc_min_bitpool(),
@@ -1234,6 +1268,8 @@ fn peer_params(remote: &RemoteCaps, kind: CodecKind, channels: u32, req: &Stream
         opus_channels,
         opus_max_bitrate,
         aac_max_bitrate,
+        aptxad_source_timed,
+        aptxad_link_clock,
         aptxad_r2: kind == CodecKind::AptxAdaptive && remote.aptxad_r2(),
         // As the SET_CONFIGURATION asked for it (configuration_with)
         lhdcv5_low_latency: kind == CodecKind::LhdcV5 && remote.lhdcv5_low_latency(asks(req, kind, remote)),
@@ -1965,7 +2001,7 @@ pub(crate) fn run(inner: &Arc<Inner>, req: StreamRequest) {
             && (matches!(kind, CodecKind::Ldac | CodecKind::LhdcV5 | CodecKind::AptxAdaptive)
                 || (kind == CodecKind::Aac && vbr))
             || sbc_abr(&req, kind),
-        peer: peer_params(&remote, kind, channels, &req),
+        peer: peer_params(&host, &remote, kind, channels, &req),
     };
     // What the encoder goes by: `req` with the bitpools chosen during the stream
     let mut encoder_req = req.clone();
@@ -2169,10 +2205,10 @@ pub(crate) fn run(inner: &Arc<Inner>, req: StreamRequest) {
         {
             // Taken by the encoder A2DP resumes with
             encoder_req.set_bitpools(b);
-            encoder_config.peer = peer_params(&remote, kind, channels, &encoder_req);
+            encoder_config.peer = peer_params(&host, &remote, kind, channels, &encoder_req);
         } else if let Some(b) = inner.take_bitpool_change() {
             encoder_req.set_bitpools(b);
-            encoder_config.peer = peer_params(&remote, kind, channels, &encoder_req);
+            encoder_config.peer = peer_params(&host, &remote, kind, channels, &encoder_req);
             let sink = pipeline.take().and_then(Pipeline::stop);
             let Some(sink) = sink else {
                 inner.notify(StreamState::Error, Msg::new("error.encode_thread"));
@@ -2538,12 +2574,16 @@ pub(crate) fn run(inner: &Arc<Inner>, req: StreamRequest) {
         r.remote = as_asked(r.remote, forced, unlisted);
         // The encoder follows the new stream: its MTU and the device's
         // settings (e.g. its SBC bitpool range) may have changed
-        let new_config =
-            EncoderConfig { mtu: r.mtu, peer: peer_params(&r.remote, kind, channels, &encoder_req), ..encoder_config };
+        let new_config = EncoderConfig {
+            mtu: r.mtu,
+            peer: peer_params(&host, &r.remote, kind, channels, &encoder_req),
+            ..encoder_config
+        };
         if r.mtu != encoder_config.mtu {
             tracing::info!("reconnect: media payload size {} -> {}", encoder_config.mtu, r.mtu);
         }
-        let changed = new_config != encoder_config;
+        // A resumed ST0 stream needs a fresh time-to-play after the gap.
+        let changed = new_config != encoder_config || new_config.peer.aptxad_source_timed;
         tracing::debug!(
             "reconnect: encoder config changed {changed}, pipeline {}",
             if pipeline.is_some() && !changed { "reset" } else { "started anew" }

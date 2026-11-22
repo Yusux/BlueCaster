@@ -33,8 +33,8 @@ pub use le_stream::{
 pub use messages::{CodecStop, CodecStopKind, Msg};
 pub use service::{LeCliOptions, ScannedDevice, Service, ServiceEvent, ServiceOptions, VoiceChange};
 pub use stream::{
-    AacDetails, AacDeviceCaps, CodecDetails, CodecDeviceCaps, KnownCodecs, SbcDetails, SbcDeviceCaps, SourceInfo,
-    SourceRequest, StreamInfo, StreamRequest, StreamState, VolumeSync,
+    AacDetails, AacDeviceCaps, AptxAdaptiveDetails, CodecDetails, CodecDeviceCaps, KnownCodecs, SbcDetails,
+    SbcDeviceCaps, SourceInfo, SourceRequest, StreamInfo, StreamRequest, StreamState, VolumeSync,
 };
 pub use vendor::huawei::is_huawei;
 pub use voice::{HeadsetMic, MicOutput, MicTarget, apply_mic_processing, mic_conflict, resolve_mic_output};

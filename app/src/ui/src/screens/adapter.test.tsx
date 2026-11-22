@@ -4,7 +4,7 @@ import { App } from "../app/App";
 import { t } from "../i18n";
 import { MockCore, type MockScenario, sampleSnapshot } from "../ipc/mock";
 import { createCore } from "../ipc/store";
-import { adapterIds, adapterIdsHint, adapterName, driverText } from "./Adapter";
+import { adapterIds, adapterIdsHint, adapterName, driverText, sharedRadioBanner, sharedRadioShown } from "./Adapter";
 import { chipReportUrl } from "../lib/links";
 
 let mock: MockCore | null = null;
@@ -23,6 +23,71 @@ afterEach(() => {
   mock?.dispose();
   mock = null;
   vi.restoreAllMocks();
+});
+
+describe("shared radio", () => {
+  it("validates the BLE address before saving the adapter and peer together", async () => {
+    const { calls, core } = start();
+    await screen.findByRole("navigation");
+    // Set up in developer mode only
+    expect(screen.queryByLabelText(t("ui.adapter.shared_peer"))).toBeNull();
+    await core.request("settings.set", { settings: { ...core.state.snap!.settings, developer_mode: true } });
+    const input = await screen.findByLabelText(t("ui.adapter.shared_peer"));
+    const save = within(input.closest("section")!).getByRole("button", { name: t("ui.adapter.shared_save") });
+    // Nothing to save until the address changes
+    expect(save).toBeDisabled();
+    fireEvent.input(input, { target: { value: "incomplete" } });
+    expect(save).toBeDisabled();
+    fireEvent.input(input, { target: { value: "01:23:45:67:89:ab" } });
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "settings.set",
+        params: {
+          settings: expect.objectContaining({
+            shared_radio_peer: "01:23:45:67:89:AB",
+            shared_radio_adapter: expect.stringMatching(/^[0-9A-F]{4}:[0-9A-F]{4}$/),
+          }),
+        },
+      }),
+    );
+    // Saved: sharing is set up, not running yet
+    await screen.findByText(t("ui.adapter.shared_state_idle"));
+    fireEvent.input(input, { target: { value: "" } });
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "settings.set",
+        params: { settings: expect.objectContaining({ shared_radio_peer: "", shared_radio_adapter: "" }) },
+      }),
+    );
+  });
+
+  it("is set up in developer mode and stays shown once a peer is saved", () => {
+    expect(sharedRadioShown(false, true, "")).toBe(false);
+    expect(sharedRadioShown(true, false, "")).toBe(false);
+    expect(sharedRadioShown(true, true, "")).toBe(true);
+    expect(sharedRadioShown(false, false, "01:23:45:67:89:AB")).toBe(true);
+  });
+
+  it("says where the shared radio is", () => {
+    const peer = "01:23:45:67:89:AB";
+    expect(sharedRadioBanner("", { state: "connected" })).toBeNull();
+    expect(sharedRadioBanner(peer, null)?.title).toBe(t("ui.adapter.shared_state_idle"));
+    expect(sharedRadioBanner(peer, { state: "waiting" })?.kind).toBe("warn");
+    expect(sharedRadioBanner(peer, { state: "attached" })).toEqual({
+      kind: "good",
+      title: t("ui.adapter.shared_state_attached"),
+      text: t("ui.adapter.shared_attached", peer),
+    });
+    expect(sharedRadioBanner(peer, { state: "connected" })?.text).toBe(t("ui.adapter.shared_connected", peer));
+    expect(sharedRadioBanner(peer, { state: "stopped", error: "USB/IP attach failed" })).toEqual({
+      kind: "error",
+      title: t("ui.adapter.shared_state_failed"),
+      text: "USB/IP attach failed",
+    });
+    expect(sharedRadioBanner(peer, { state: "stopped" })?.kind).toBe("info");
+  });
 });
 
 describe("AFH", () => {

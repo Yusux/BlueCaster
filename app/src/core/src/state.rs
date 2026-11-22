@@ -25,7 +25,7 @@ use ipc::{
     AdapterInfo, AdapterState, AdapterStatus, AudioApp, AudioDevice, CaptureState, DevLog, DevOverrides, Device,
     DiagInfo, DriverKind, ErrorInfo, Event, FirmwareFile, LeStreamInfo, LinkTotals, LoaderStatus, Method, MixerApp,
     Msg, OtherRadio, ProbeResult, Profile, ReceiverConnection, ReceiverState, ScriptCheck, ScriptResult, Settings,
-    SettingsApplied, Snapshot, SourceInfo, StreamState, StreamStatus, UpdateState, WifiAccessPoint,
+    SettingsApplied, SharedRadioStatus, Snapshot, SourceInfo, StreamState, StreamStatus, UpdateState, WifiAccessPoint,
     WindowsPairedDevice,
 };
 use serde_json::Value;
@@ -374,6 +374,8 @@ fn to_ipc_settings(s: &CoreSettings) -> Settings {
         volume_mixer: s.volume_mixer,
         all_audio_devices: s.all_audio_devices,
         developer_mode: s.debug_mode,
+        shared_radio_adapter: s.shared_radio_adapter.clone(),
+        shared_radio_peer: s.shared_radio_peer.clone(),
         dev_overrides: DevOverrides {
             rtp_marker: s.dev_overrides.rtp_marker,
             packet_dump: s.dev_overrides.packet_dump,
@@ -471,6 +473,8 @@ fn merge_settings(base: &CoreSettings, s: &Settings) -> CoreSettings {
     c.volume_mixer = s.volume_mixer;
     c.all_audio_devices = s.all_audio_devices;
     c.debug_mode = s.developer_mode;
+    c.shared_radio_adapter.clone_from(&s.shared_radio_adapter);
+    c.shared_radio_peer.clone_from(&s.shared_radio_peer);
     c.dev_overrides = codec::dev::DevOverrides {
         rtp_marker: s.dev_overrides.rtp_marker,
         packet_dump: s.dev_overrides.packet_dump,
@@ -991,6 +995,7 @@ fn to_ipc_codec_details(d: bluecaster_core::CodecDetails) -> ipc::CodecDetails {
             max_bitrate: c.max_bitrate,
             lhdcv5_low_latency: c.lhdcv5_low_latency,
         }),
+        aptx_adaptive: d.aptx_adaptive.map(|a| ipc::AptxAdaptiveDetails { r2: a.r2, source_timed: a.source_timed }),
     }
 }
 
@@ -2025,6 +2030,7 @@ impl CoreState {
                 hung,
                 loader: None,
                 active: None,
+                shared_radio: None,
             },
             devices: saved_devices(&dir, &[], &service.device_codecs()),
             scanning: false,
@@ -2431,6 +2437,14 @@ impl CoreState {
                         percent: p.percent,
                         ok: p.done,
                     }),
+                    ..s.adapter
+                }));
+                return;
+            }
+            // The Adapters screen shows where the shared radio is
+            ServiceEvent::SharedRadio(r) => {
+                self.publish(Event::Adapter(AdapterState {
+                    shared_radio: Some(SharedRadioStatus { state: r.state.key().into(), error: r.error }),
                     ..s.adapter
                 }));
                 return;

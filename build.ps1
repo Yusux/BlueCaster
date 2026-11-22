@@ -11,6 +11,7 @@ Run from any folder (PowerShell 7):
     pwsh ./build.ps1                  # release profile: target/release/*.exe
     pwsh ./build.ps1 -Debug           # dev profile: target/debug/*.exe
     pwsh ./build.ps1 -Test            # build, then the checks of a pull request
+    pwsh ./build.ps1 -SharedRadio    # include the shared-radio runtime (requires uv)
     pwsh ./build.ps1 -Decoder         # build, and tools/a2dp_decode -> build/a2dp_decode
     pwsh ./build.ps1 -Emu             # build, the decoder, then tools/emu/run_test.py
     pwsh ./build.ps1 -Emu -Codecs sbc,ldac
@@ -42,6 +43,7 @@ param(
     [switch]$Debug,
     [switch]$Test,
     [switch]$Decoder,
+    [switch]$SharedRadio,
     [switch]$Emu,
     [switch]$Release,
     [ValidateSet('x64', 'arm64')]
@@ -151,6 +153,7 @@ if (-not $Release) {
 
     $meta = cargo metadata --format-version 1 --no-deps --manifest-path (Join-Path $repo 'Cargo.toml') | ConvertFrom-Json
     $targetDir = Join-Path $meta.target_directory $profileDir
+    if ($SharedRadio) { & "$repo/app/shared-radio/package.ps1" -Destination $targetDir }
 }
 
 # --- The decoder tool (a CMake project of its own) ---
@@ -181,6 +184,7 @@ if ($Test) {
     Invoke-InUi 'tsc' { pnpm exec tsc --noEmit }
     Write-Step 'UI: vitest run'
     Invoke-InUi 'vitest' { pnpm exec vitest run }
+    Invoke-Checked 'shared-radio transport tests' { python -m unittest discover -s (Join-Path $repo 'app/shared-radio') }
     Write-Step 'Language files: tools/check_lang.py'
     Invoke-Checked 'check_lang.py' { python (Join-Path $repo 'tools/check_lang.py') }
 }

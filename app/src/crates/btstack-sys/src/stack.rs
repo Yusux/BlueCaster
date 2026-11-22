@@ -533,6 +533,11 @@ impl Stack {
         transport::set_raw(false);
     }
 
+    /// Release the physical USB handle before opening the shared transport after firmware bring-up.
+    pub fn close_installed_transport(&self) {
+        transport::close();
+    }
+
     // ---- HCI ----
 
     /// HCI_POWER_ON: opens the transport. Err if it could not be opened.
@@ -615,6 +620,11 @@ impl Stack {
         let status = unsafe { ffi::bluecaster_cmd_read_failed_contact_counter(con_handle) };
         tracing::trace!(target: "btstack", "read failed contact counter 0x{con_handle:04X}: 0x{status:02X}");
         status
+    }
+
+    pub fn cmd_read_clock(&self, handle: u16) -> u8 {
+        // SAFETY: called on the BTstack thread.
+        unsafe { ffi::bluecaster_cmd_read_clock(handle) }
     }
 
     pub fn cmd_read_link_quality(&self, con_handle: u16) -> u8 {

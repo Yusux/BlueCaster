@@ -153,7 +153,7 @@ pub fn realtek_own_driver_firmware(fw_stem: &str, vid: u16, pid: u16) -> Option<
 /// adapters
 pub fn configure(config: &mut HostConfig, settings: &Settings, config_dir: &Path) {
     config.afh = Some(Box::new(WifiAfh::default()));
-    if matches!(config.transport, TransportConfig::Tcp(_)) {
+    if !matches!(config.transport, TransportConfig::Usb(_)) {
         return; // a virtual controller: no chipset, no firmware
     }
     let auto = chips::is_auto_chip(settings.bt_chip_pid, &settings.bt_chip_fw_stem);

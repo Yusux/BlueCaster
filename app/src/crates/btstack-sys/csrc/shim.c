@@ -882,6 +882,10 @@ uint8_t bluecaster_cmd_read_failed_contact_counter(uint16_t con_handle) {
     return hci_send_cmd(&hci_read_failed_contact_counter, con_handle);
 }
 
+uint8_t bluecaster_cmd_read_clock(uint16_t con_handle) {
+    return hci_send_cmd(&hci_read_clock, con_handle, 1); /* piconet clock */
+}
+
 uint8_t bluecaster_cmd_read_link_quality(uint16_t con_handle) {
     return hci_send_cmd(&hci_read_link_quality, con_handle);
 }

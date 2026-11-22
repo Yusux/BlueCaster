@@ -306,6 +306,9 @@ pub struct LinkRadio {
 /// not answer that command (the reading is then skipped for the session).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LinkDetails {
+    /// The piconet clock in µs (Read Clock) and when it was read: a
+    /// source-timed aptX Adaptive stream's time base
+    pub piconet_clock: Option<(u32, std::time::Instant)>,
     /// The remote device's controller (Read Remote Version Information)
     pub remote_version: Option<RemoteVersion>,
     /// What the remote device's controller supports (LMP features page 0,

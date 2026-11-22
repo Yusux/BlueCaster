@@ -212,6 +212,26 @@ pub struct AdapterState {
     #[ts(optional = nullable)]
     #[serde(default)]
     pub active: Option<ActiveAdapter>,
+    /// Adapter > Share with Windows (experimental): where the shared radio
+    /// is; None before it first started in this session
+    #[ts(optional = nullable)]
+    #[serde(default)]
+    pub shared_radio: Option<SharedRadioStatus>,
+}
+
+/// Where the shared radio is (AdapterState::shared_radio)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+
+pub struct SharedRadioStatus {
+    /// "starting" (the worker opens the adapter), "waiting" (for Windows to
+    /// attach the virtual controller), "attached" (Windows uses it, the
+    /// peripheral can connect), "connected" (the peripheral is connected to
+    /// Windows), "stopped" (the stack stopped, or the worker failed)
+    pub state: String,
+    /// Why the worker failed (technical, its own words)
+    #[ts(optional = nullable)]
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// The adapter BlueCaster uses (AdapterState::active): what its entry in
@@ -393,6 +413,21 @@ pub struct CodecDetails {
     /// Any other codec: what the device's endpoint of it lists (issue #86)
     #[serde(default)]
     pub device: Option<CodecDeviceCaps>,
+    /// aptX Adaptive: its version and how its packets are timed
+    #[ts(optional = nullable)]
+    #[serde(default)]
+    pub aptx_adaptive: Option<AptxAdaptiveDetails>,
+}
+
+/// aptX Adaptive beyond the summary (CodecDetails::aptx_adaptive)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+
+pub struct AptxAdaptiveDetails {
+    /// The sink is R2 (capability extension), else R1
+    pub r2: bool,
+    /// Source-timed: each packet carries its time to play on the piconet
+    /// clock (the Bose QC Ultra); else host-timed, the sink paces itself
+    pub source_timed: bool,
 }
 
 /// SBC, SBC XQ and FastStream frames
@@ -1134,6 +1169,14 @@ pub struct Settings {
     pub all_audio_devices: bool,
     /// Developer mode: receiver test, HCI capture, debug details
     pub developer_mode: bool,
+    /// Adapter > Share with Windows (experimental): the WinUSB adapter
+    /// ("VID:PID") classic audio shares with Windows
+    #[serde(default)]
+    pub shared_radio_adapter: String,
+    /// The LE peripheral ("XX:XX:XX:XX:XX:XX") Windows may connect to on the
+    /// shared adapter; empty: no sharing
+    #[serde(default)]
+    pub shared_radio_peer: String,
     /// Developer mode: overrides of the codec and media path, in force
     /// while developer_mode is on (read when the next stream is set up)
     #[serde(default)]

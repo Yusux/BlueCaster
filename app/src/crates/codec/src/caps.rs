@@ -150,6 +150,14 @@ const APTXAD_RATE_48000: u8 = 0x10;
 /// 96 kHz as configured (both bits, as a Snapdragon phone sends it)
 const APTXAD_RATE_96000: u8 = 0xA0;
 const APTXAD_SOURCE_TYPE_HOST: u8 = 0x02;
+/// The codec information of the Bose QC Ultra Headphones (R2). These sinks
+/// drop a host-timed stream; they play a source-timed one (source type 0,
+/// a time to play on the piconet clock). Matched whole so that other R2
+/// sinks keep host timing.
+const APTXAD_BOSE_QC_ULTRA: [u8; 30] = [
+    0xD7, 0, 0, 0, 0xAD, 0, 0x51, 0x0A, 0x37, 0x6A, 0xC8, 0x7D, 0x64, 0x7D, 0, 1, 0x87, 0, 0, 0x0F, 2, 3, 3, 3, 0,
+    0xAA, 0, 0, 0, 0,
+];
 const APTXAD_CH_STEREO: u8 = 0x02;
 const APTXAD_CH_JOINT_STEREO: u8 = 0x08;
 const APTXAD_DATA: usize = 8;
@@ -1072,6 +1080,13 @@ impl RemoteCaps {
         self.aptxad_info.get(APTXAD_EXT_VERSION) == Some(&1)
     }
 
+    /// aptX Adaptive: the sink wants a source-timed stream (configured
+    /// without the host source type, its packets timed on the piconet
+    /// clock); only the sinks known to need it ([`APTXAD_BOSE_QC_ULTRA`])
+    pub fn aptxad_source_timed(&self) -> bool {
+        self.aptxad_info.starts_with(&APTXAD_BOSE_QC_ULTRA)
+    }
+
     /// aptX Adaptive at 96 kHz: an R2 sink that lists the rate, by either
     /// of its bits as Android checks it (upstream offers 96 kHz to R2 sinks
     /// only; an R1 sink is always 48 kHz)
@@ -1543,7 +1558,7 @@ impl RemoteCaps {
                 let rc = &self.aptxad_info;
                 let byte = |i: usize| rc.get(i).copied().unwrap_or(0);
                 let mode = if byte(7) & APTXAD_CH_STEREO != 0 { APTXAD_CH_STEREO } else { APTXAD_CH_JOINT_STEREO };
-                let rate = freq | APTXAD_SOURCE_TYPE_HOST;
+                let rate = if self.aptxad_source_timed() { freq } else { freq | APTXAD_SOURCE_TYPE_HOST };
                 let info = if self.aptxad_r2() {
                     aptxad_element(rate, mode, &APTXAD_R2_DATA)
                 } else {
@@ -2804,6 +2819,16 @@ mod tests {
                 Err(ConfigError::SampleRate(CodecKind::AptxAdaptive, 44100))
             );
         }
+
+        // A source-timed sink is configured without the host source type
+        let mut bose = RemoteCaps::default();
+        bose.add_vendor(9, &APTXAD_BOSE_QC_ULTRA);
+        assert!(bose.aptxad_source_timed());
+        let ConfigRequest::Vendor(info) = bose.configuration(CodecKind::AptxAdaptive, 48000, 2, 24).unwrap().request
+        else {
+            panic!("not a vendor configuration")
+        };
+        assert_eq!(info[6], APTXAD_RATE_48000);
 
         // R2 sinks get the source's own R2 block, whatever their features
         for features in [0x0F00_0000, 0x0F00_0003, 0x0F00_0017] {

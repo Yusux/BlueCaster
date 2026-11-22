@@ -26,7 +26,7 @@ key. Without them the build still works, but its in-app update stays off
 (the update check only shows the release page, as the portable version).
 Neither key is part of the repository.
 
-Needs: Rust (with the target), pnpm, the UI's node_modules (pnpm install),
+Needs: uv (for the bundled shared-radio runtime), Rust (with the target), pnpm, the UI's node_modules (pnpm install),
 the submodules under extern/, cargo-about (cargo install cargo-about), and
 Inno Setup 7.1.0 (winget install JRSoftware.InnoSetup.7 --version 7.1.0; ISCC.exe is found in
 its default folders, on PATH or in $env:ISCC). The WebView2
@@ -232,6 +232,7 @@ New-Item -ItemType Directory -Force $pkgDir | Out-Null
 foreach ($name in 'bluecaster', 'bluecaster-core', 'bluecaster-driver') {
     Copy-Item (Join-Path $release "$name.exe") $pkgDir
 }
+& (Join-Path $repo 'app/shared-radio/package.ps1') -Destination $pkgDir
 Copy-Item -Recurse (Join-Path $docDir '*') $pkgDir
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $zip = Join-Path $OutDir "$pkgName-$archName-portable.zip"

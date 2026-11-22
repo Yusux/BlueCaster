@@ -11,6 +11,7 @@
 
 pub mod iso_intr;
 pub mod reassembly;
+pub mod shared;
 pub mod tcp;
 pub mod usb;
 

@@ -5,6 +5,7 @@ import type { AdapterStatus } from "./AdapterStatus";
 import type { LoaderStatus } from "./LoaderStatus";
 import type { Msg } from "./Msg";
 import type { OtherRadio } from "./OtherRadio";
+import type { SharedRadioStatus } from "./SharedRadioStatus";
 
 export type AdapterState = { status: AdapterStatus, adapters: Array<AdapterInfo>, error: Msg | null, 
 /**
@@ -41,4 +42,9 @@ loader?: LoaderStatus | null,
  * stack runs (before the first scan or connection) and over the
  * emulator's TCP transport
  */
-active?: ActiveAdapter | null, };
+active?: ActiveAdapter | null, 
+/**
+ * Adapter > Share with Windows (experimental): where the shared radio
+ * is; None before it first started in this session
+ */
+shared_radio?: SharedRadioStatus | null, };

@@ -391,6 +391,13 @@ pub struct PeerParams {
     /// aptX Adaptive: the sink is R2 (its codec information has the
     /// capability extension), which changes the bitstream and the tables
     pub aptxad_r2: bool,
+    /// aptX Adaptive: the sink wants a source-timed stream (the RTP
+    /// timestamp is a time to play on the piconet clock, SSRC
+    /// [`aptx_adaptive::SSRC_SOURCE_TIMED`])
+    pub aptxad_source_timed: bool,
+    /// aptX Adaptive, source-timed: the piconet clock in µs and when it was
+    /// read (None: no reading, the encoder is unavailable)
+    pub aptxad_link_clock: Option<(u32, std::time::Instant)>,
     /// LHDC V5: low latency is in the configuration (asked for and listed
     /// by the sink): the encoder runs every 10 ms instead of 20
     pub lhdcv5_low_latency: bool,

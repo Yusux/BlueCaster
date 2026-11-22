@@ -79,6 +79,7 @@ export type { LogLevel } from "./bindings/LogLevel";
 export type { MicProcessing } from "./bindings/MicProcessing";
 export type { Msg } from "./bindings/Msg";
 export type { ReceiverConnection } from "./bindings/ReceiverConnection";
+export type { SharedRadioStatus } from "./bindings/SharedRadioStatus";
 export type { StreamState } from "./bindings/StreamState";
 
 export type Snapshot = Wire<BSnapshot>;

@@ -140,6 +140,15 @@ pub enum TransportConfig {
     Usb(UsbSelector),
     /// H4 over TCP, "host:port" (tools/emu)
     Tcp(String),
+    /// Classic audio and one BLE peripheral of Windows' on the same WinUSB
+    /// adapter (experimental): HCI runs through the shared-radio worker,
+    /// which gives Windows a virtual controller over USB/IP
+    SharedRadio {
+        /// The adapter, "VID:PID"
+        adapter: String,
+        /// The peripheral Windows may connect to, "XX:XX:XX:XX:XX:XX"
+        peer: String,
+    },
 }
 
 /// Fills the AFH host channel classification from the PC's Wi-Fi (core
@@ -216,6 +225,9 @@ pub struct HostConfig {
     /// Told where a chip loader (Intel's download) is while the adapter
     /// starts, for the Adapters screen
     pub on_loader: Option<bringup::LoaderHook>,
+    /// Told where the shared radio is ([`TransportConfig::SharedRadio`]),
+    /// for the Adapters screen
+    pub on_shared_radio: Option<hci_transport::shared::SharedRadioHook>,
     /// The adapter's Bluetooth name, as headphones show it ([`local_name`])
     pub local_name: String,
 }
@@ -275,6 +287,7 @@ impl HostConfig {
             battery: false,
             voice: false,
             on_loader: None,
+            on_shared_radio: None,
             local_name: APP_LOCAL_NAME.into(),
         }
     }
@@ -482,9 +495,16 @@ pub struct BtHost {
 
 /// The transport; `voice` (HostConfig::voice): USB carries SCO over
 /// interface 1 (an H2 transport), otherwise it has no SCO path at all
-fn backend(transport: &TransportConfig, voice: bool) -> Box<dyn HciBackend> {
+fn backend(
+    transport: &TransportConfig,
+    voice: bool,
+    on_shared_radio: Option<hci_transport::shared::SharedRadioHook>,
+) -> Box<dyn HciBackend> {
     match transport {
         TransportConfig::Tcp(addr) => Box::new(TcpH4::new(addr.clone())),
+        TransportConfig::SharedRadio { adapter, peer } => {
+            Box::new(hci_transport::shared::SharedRadio::new(adapter, peer, on_shared_radio))
+        }
         TransportConfig::Usb(sel) => {
             let mut sel = sel.clone();
             // Realtek controllers BTstack's driver knows, and a few others
@@ -592,7 +612,11 @@ impl BtHost {
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
         let (events_tx, events_rx) = mpsc::channel::<HostEvent>();
         let (remote_tx, remote_rx) = mpsc::channel::<(Remote, MediaSink)>();
+        let shared_radio = matches!(config.transport, TransportConfig::SharedRadio { .. });
         let tcp = matches!(config.transport, TransportConfig::Tcp(_));
+        // No adapter of our own to set up: the emulator's controller, or the
+        // shared-radio worker's (an Intel adapter's firmware loads first, below)
+        let virtual_controller = !matches!(config.transport, TransportConfig::Usb(_));
         let capture = config.capture.clone();
         let le_on = config.le_audio.is_some();
         let voice_on = config.voice;
@@ -642,6 +666,7 @@ impl BtHost {
                         battery,
                         voice,
                         on_loader,
+                        on_shared_radio,
                         local_name,
                     } = config;
                     let failed_shared = shared.clone();
@@ -649,7 +674,7 @@ impl BtHost {
                         // LE Audio, or the LE keys of classic devices (SM):
                         // the controller's LE support visible to BTstack
                         // (before hci_init / the transport)
-                        if le_audio.is_some() || le_keys.is_some() {
+                        if le_audio.is_some() || le_keys.is_some() || shared_radio {
                             stack.set_le_hidden(false);
                         }
                         // HFP audio: HCI init's SCO commands (flow control,
@@ -677,13 +702,14 @@ impl BtHost {
                         let _ = remote_tx.send((remote, sink));
                         // A Broadcom adapter the patch of Broadcom's Windows
                         // driver is for (crate::broadcom)
-                        let broadcom_loader =
-                            !tcp && broadcom_ids.iter().any(|&(vid, pid)| broadcom::patch_files(vid, pid).is_some());
+                        let broadcom_loader = !virtual_controller
+                            && broadcom_ids.iter().any(|&(vid, pid)| broadcom::patch_files(vid, pid).is_some());
                         let setup = Setup {
-                            tcp,
+                            virtual_controller,
+                            shared_radio,
                             link_key_file,
                             firmware_dir: firmware_dir.unwrap_or_else(exe_dir),
-                            realtek_pid: if tcp { 0 } else { realtek_pid },
+                            realtek_pid: if virtual_controller { 0 } else { realtek_pid },
                             realtek_files,
                             realtek_firmware_file,
                             broadcom_ids,
@@ -707,34 +733,46 @@ impl BtHost {
                             afh,
                             le,
                         );
-                        let backend = backend(&transport, voice);
+                        let backend = backend(&transport, voice, on_shared_radio);
                         if let Some(make) = tool {
                             // A tool, no HCI init (also over TCP: the
                             // emulator's controller)
                             stack.install_transport(backend);
                             app.start_tool(stack, make);
-                        } else if intel_loader && !tcp {
+                        } else if let TransportConfig::SharedRadio { adapter, .. } = &transport
+                            && let Ok(selector) = UsbSelector::from_arg(adapter)
+                            && selector.vid_pid.is_some_and(|(vid, pid)| {
+                                chips::vendor_for_usb(vid, pid, None) == chips::ChipVendor::Intel
+                            })
+                        {
+                            // The shared radio on an Intel adapter: its
+                            // firmware loads over WinUSB first, then the
+                            // worker opens the adapter (after_loader)
+                            app.after_loader = Some(backend);
+                            stack.install_transport(Box::new(UsbTransport::new(selector)));
+                            app.start_intel_loader(stack);
+                        } else if intel_loader && !virtual_controller {
                             // Intel controllers boot into a bootloader and
                             // need ibt-*.sfi / .ddc before HCI init; the
                             // loader is done at once if the firmware runs
                             stack.install_transport(backend);
                             app.start_intel_loader(stack);
-                        } else if mediatek_loader && !tcp {
+                        } else if mediatek_loader && !virtual_controller {
                             // MediaTek's ROM refuses HCI until its RAM
                             // code is downloaded and Bluetooth switched on
                             stack.install_transport(backend);
                             app.start_mediatek_loader(stack);
-                        } else if qualcomm_loader && !tcp {
+                        } else if qualcomm_loader && !virtual_controller {
                             // Qualcomm's ROM needs its rampatch and NVM (sent
                             // with USB requests) before it is used
                             stack.install_transport(backend);
                             app.start_qualcomm_loader(stack);
-                        } else if atheros_loader && !tcp {
+                        } else if atheros_loader && !virtual_controller {
                             // The AR30xx ROM needs its patch and system
                             // configuration (sent with USB requests) first
                             stack.install_transport(backend);
                             app.start_atheros_loader(stack);
-                        } else if let Some((vid, pid)) = realtek_driver_chip.filter(|_| !tcp)
+                        } else if let Some((vid, pid)) = realtek_driver_chip.filter(|_| !virtual_controller)
                             && let Some((chip, file)) = realtek_btnic::chip(vid, pid)
                         {
                             // Its ROM needs the firmware of Realtek's Windows

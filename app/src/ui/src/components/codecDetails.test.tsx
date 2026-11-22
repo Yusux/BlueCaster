@@ -139,6 +139,25 @@ describe("codec details", () => {
     expect(c).toHaveTextContent("Filled: in use.");
   });
 
+  it("shows aptX Adaptive's version and whether its packets are source-timed", () => {
+    const aptx = (source_timed: boolean): CodecDetails => ({
+      ...SBC,
+      frame_bytes: null,
+      frames_per_packet: null,
+      sbc: null,
+      device: { codec: "aptx_adaptive", sample_rates: [48000], bit_depths: [24], max_bitrate: 0, lhdcv5_low_latency: false },
+      aptx_adaptive: { r2: true, source_timed },
+    });
+    const info = { ...INFO, codec: "aptX Adaptive", sample_rate: 48000, bits: 24 };
+    const bose = render(() => <CodecDetailsCard info={info} details={aptx(true)} />).container;
+    expect(bose.querySelectorAll("h3")).toHaveLength(1);
+    expect(bose).toHaveTextContent("VersionR2");
+    expect(bose).toHaveTextContent("TimingSource-timed (piconet clock)");
+    cleanup();
+    const other = render(() => <CodecDetailsCard info={info} details={aptx(false)} />).container;
+    expect(other).toHaveTextContent("TimingHost-timed");
+  });
+
   it("shows AAC's object type, peak bit rate and VBR", () => {
     const aac: CodecDetails = {
       mtu: 894,
